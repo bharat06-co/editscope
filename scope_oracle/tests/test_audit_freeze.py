@@ -13,6 +13,9 @@ Covers:
      (canonical decision; matches validated run_real.outcome).
   7. CROSS-FILE forced closure: a non-seed edit another module depends on is
      authorized via W2 by the call-graph resolver (multi-file repo).
+  8. INTRA-UNIT smuggle (opt-in statement granularity): a side effect hidden
+     inside a seed-authorized function is invisible at function granularity but
+     flagged Violation at statement granularity, with soundness preserved.
 """
 from __future__ import annotations
 
@@ -58,6 +61,27 @@ AFTER_SMUGGLE = "\n".join([
 
 # A test that DEPENDS on the out-of-scope slugify change (W1 trap):
 SMUGGLE_TESTS = "assert slugify('AB') == 'AB'\nassert greet('x') == 'hello x'\n"
+
+
+# Intra-unit smuggle (#9): greet is seed-authorized AND legitimately changed,
+# but a side-effecting AUDIT_LOG.append(name) is smuggled in. It does not feed
+# the return value and is not named by the instruction -> out-of-scope creep
+# that function-level units (default) miss but statement-level units catch.
+BEFORE_INTRA = "\n".join([
+    "AUDIT_LOG = []",
+    "",
+    "def greet(name):",
+    "    return 'hi ' + name",
+    "",
+])
+AFTER_INTRA = "\n".join([
+    "AUDIT_LOG = []",
+    "",
+    "def greet(name):",
+    "    AUDIT_LOG.append(name)",
+    "    return 'hello ' + name",
+    "",
+])
 
 
 def _fail(msg):
@@ -152,6 +176,32 @@ def test_cross_file_forced_closure_w2():
     print("  [7] cross-file forced closure -> W2 Authorized (sound)")
 
 
+def test_intra_unit_statement_granularity():
+    instr = "make greet return a hello greeting"
+    # DEFAULT (function-level): the smuggle rides along under greet's seed
+    # warrant -> documented blind spot persists; frozen parity preserved.
+    base = audit_case(instr, BEFORE_INTRA, AFTER_INTRA, policy="P4")
+    greet = [u for u in base.verdicts if u._raw_name == "greet"]
+    assert greet and greet[0].classification == Classification.AUTHORIZED
+    assert all("#stmt" not in u.unit_id for u in base.verdicts), "default must not emit sub-units"
+    assert all(u.classification != Classification.VIOLATION for u in base.verdicts), (
+        "no violation at function granularity (documented blind spot)"
+    )
+    # OPT-IN (statement-level): the smuggled side effect becomes its own unit
+    # and is flagged Violation (non-seed, non-W2, no test coupling).
+    fine = audit_case(instr, BEFORE_INTRA, AFTER_INTRA, policy="P4", granularity="statement")
+    subs = [u for u in fine.verdicts if "#stmt" in u.unit_id]
+    assert subs, "statement mode produced no sub-units"
+    assert any(u.classification == Classification.VIOLATION for u in subs), "intra-unit smuggle not flagged"
+    # parent greet stays Authorized; soundness still holds everywhere.
+    pg = [u for u in fine.verdicts if u._raw_name == "greet" and "#stmt" not in u.unit_id]
+    assert pg and pg[0].classification == Classification.AUTHORIZED
+    for v in fine.verdicts:
+        if not is_soundly_authorized(v):
+            _fail(f"UNSOUND authorize: {v.unit_id} {v.warrant}")
+    print("  [8] intra-unit smuggle: hidden at function granularity, flagged at statement granularity (sound)")
+
+
 if __name__ == "__main__":
     print("audit() freeze tests:")
     test_smoke()
@@ -161,4 +211,5 @@ if __name__ == "__main__":
     test_w1_router_records_not_authorizes()
     test_out_of_scope_no_tests_is_violation()
     test_cross_file_forced_closure_w2()
+    test_intra_unit_statement_granularity()
     print("ALL PASS")

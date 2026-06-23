@@ -201,7 +201,7 @@ def before_after_repo(repo_before: RepoBefore, patch) -> tuple:  # noqa: ANN001
 # --------------------------------------------------------------------------
 # frozen-contract producer
 # --------------------------------------------------------------------------
-def partition_units(repo_before: RepoBefore, patch, seed) -> list[UnitVerdict]:  # noqa: ANN001
+def partition_units(repo_before: RepoBefore, patch, seed, granularity: str = "unit") -> list[UnitVerdict]:  # noqa: ANN001
     before_map, after_map = before_after_repo(repo_before, patch)
     seed_names = getattr(seed, "names", set()) or set()
     files = sorted(set(before_map) | set(after_map))
@@ -233,4 +233,41 @@ def partition_units(repo_before: RepoBefore, patch, seed) -> list[UnitVerdict]: 
             v._repo_audited = dict(after_map)     # type: ignore[attr-defined]
             v._repo_reverted = repo_reverted      # type: ignore[attr-defined]
             verdicts.append(v)
+        if granularity == "statement" and seed_names:
+            verdicts.extend(
+                _statement_subunits(relpath, before, after, after_map, seed_names, multi)
+            )
     return verdicts
+
+
+def _statement_subunits(relpath, before, after, after_map, seed_names, multi):  # noqa: ANN001
+    """OPT-IN (#9): emit statement-level sub-units for smuggles inside seed funcs.
+
+    Only ever ADDS candidate units (warrant NONE) for the policy to re-examine;
+    never authorizes, so the soundness invariant is preserved. Inert unless the
+    caller passes granularity="statement".
+    """
+    from . import intra_unit
+    subs: list[UnitVerdict] = []
+    for rec in intra_unit.find_smuggles(after, before, seed_names):
+        reverted_file = rec["reverted_src"]
+        repo_reverted = dict(after_map)
+        repo_reverted[relpath] = reverted_file
+        base_id = f"{relpath}:{rec['name']}" if multi else rec["name"]
+        v = UnitVerdict(
+            unit_id=f"{base_id}#stmt@{rec['lineno']}",
+            files=[relpath],
+            loc_changed=rec["loc"],
+            classification=Classification.UNCERTAIN,  # placeholder until classify()
+            warrant=Warrant.NONE,
+            seed_overlap=0.0,
+            note="intra-unit statement sub-unit (granularity=statement)",
+        )
+        v._audited_src = after             # type: ignore[attr-defined]
+        v._reverted_src = reverted_file    # type: ignore[attr-defined]
+        v._raw_name = rec["name"]          # type: ignore[attr-defined]
+        v._file = relpath                  # type: ignore[attr-defined]
+        v._repo_audited = dict(after_map)  # type: ignore[attr-defined]
+        v._repo_reverted = repo_reverted   # type: ignore[attr-defined]
+        subs.append(v)
+    return subs

@@ -33,6 +33,7 @@ def audit(
     task_tests: Optional[str] = None,
     tests_cmd: Optional[str] = None,
     provenance: Optional[Provenance] = None,
+    granularity: str = "unit",
 ) -> AuditResult:
     """Label every change unit Authorized / Violation / Closure-uncertain.
 
@@ -52,7 +53,7 @@ def audit(
     seed = grounding.ground_seed(instruction, repo_before, patch)
 
     # 2) Units: minimal compilable clusters of changed code.
-    units: list[UnitVerdict] = partitioner.partition_units(repo_before, patch, seed)
+    units: list[UnitVerdict] = partitioner.partition_units(repo_before, patch, seed, granularity=granularity)
 
     # attach task tests (W1 router input only) to each unit
     if task_tests is not None:
@@ -85,13 +86,14 @@ def audit_case(
     after: str,
     tests: Optional[str] = None,
     policy: Union[str, Policy] = Policy.P4,
+    granularity: str = "unit",
 ) -> AuditResult:
     """Validated convenience wrapper for before/after source pairs (CanItEdit).
 
     Equivalent to audit(instruction, before, after, policy, task_tests=tests)
     where `after` is passed as the whole-file patch.
     """
-    return audit(instruction, before, after, policy, task_tests=tests)
+    return audit(instruction, before, after, policy, task_tests=tests, granularity=granularity)
 
 
 def save_audit(result: AuditResult, path: str) -> None:

@@ -23,6 +23,7 @@ result.to_json()   # -> dict (stable schema)
 - `patch: str` — a unified diff (applied to before) **or** the full after-source.
 - `policy` — `"P4"` (default, recommended) or `"P1"` (naive baseline).
 - `task_tests: str | None` — module-level assert tests, used by the **W1 router only**.
+- `granularity: str = "unit"` — `"unit"` (frozen default; function/class-level) or `"statement"` (opt-in; additionally surfaces intra-unit smuggles, see below). The default is byte-for-byte the validated path.
 
 ### Output (`AuditResult.to_json()`)
 - `policy`, `instruction`
@@ -50,6 +51,20 @@ or `X.n`) is confirmed forced collateral. Single-file repos have no cross-module
 edges, so single-file W2 results are byte-for-byte unchanged.
 **Remaining limits:** dynamic dispatch, `*`-imports, and runtime attribute
 resolution are out of scope (conservatively treated as no-closure).
+
+## Intra-unit granularity (opt-in; weakness #9 downgraded)
+`audit(..., granularity="statement")` decomposes a **seed-authorized function**
+into statement-level sub-units and surfaces *added, side-effecting* statements
+that are NOT in the edit's return/seed closure (discarded calls, attribute /
+subscript / declared-global mutation) as their own units. Those units carry
+`warrant=none` and pass through the normal sound rule — they never auto-authorize,
+so the soundness invariant is preserved. This closes the §3.4 blind spot where a
+side effect hidden inside an otherwise-authorized function rode along undetected.
+- **Default stays `"unit"`** — the validated single-file headline is unchanged.
+- **Scope:** top-level functions; separable side-effecting smuggles. **Out of
+  scope (no-finding):** smuggles that feed the return value, pure-local dead
+  code, methods inside classes, control-flow-entangled creep. This *downgrades*
+  weakness #9 (separable side-effect smuggles now caught); it does not eliminate it.
 
 ## Run the freeze tests
 ```
