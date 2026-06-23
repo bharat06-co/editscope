@@ -1,0 +1,4 @@
+# Core oracle has no hard third-party dependency (pure stdlib).
+# These sharpen the W2 resolver when installed; auto-skipped if absent.
+pyflakes>=3.0
+mypy>=1.8
