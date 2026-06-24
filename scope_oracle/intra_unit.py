@@ -32,11 +32,22 @@ Coverage (what is surfaced as a candidate smuggle):
     Reverting such a nested statement keeps its block non-empty (a `pass` is
     substituted when removal would empty the block) so the W2 resolver cannot
     be fooled into a false forced-closure authorization by a revert-induced
-    SyntaxError.
+    SyntaxError;
+  * RETURN-EMBEDDED short-circuit smuggles: the canonical idiom that hides a
+    side effect inside a return / value expression via short-circuit
+    evaluation — `mutator() or value` — where a known in-place mutator's (None)
+    result is discarded and `value` is what actually flows out. The discarded
+    mutator operand is surfaced and reverted SURGICALLY: only that operand is
+    dropped (`return mutator() or value` -> `return value`), so the legitimate,
+    possibly load-bearing return is preserved. A whole-statement revert would
+    remove the real return and could fool the typed-closure check into a FALSE
+    W2 authorization; the surgical revert avoids that.
 
 Out of scope (treated as no-finding, honest limits):
-  * a side effect embedded directly inside a return / operand expression
-    (e.g. `return lst.append(x) or value`) — not separable as its own line;
+  * embedded effects that are NOT a known mutator, or where the effect is the
+    LAST operand of the short-circuit (`value or effect()`): conservatively
+    left unflagged to avoid false-positives on legitimate fallbacks such as
+    `cache.get(k) or default` (precision over recall here);
   * pure-local dead code that never escapes the frame (no external write,
     no return contribution).
 
@@ -79,6 +90,53 @@ def _has_side_effect(stmt: ast.stmt, global_names: set) -> bool:
         if isinstance(t, ast.Name) and t.id in global_names:
             return True  # rebinding a declared global/nonlocal
     return False
+
+
+# In-place mutator methods whose return value is None, so `m(...) or value`
+# discards the call result and returns `value` — the canonical short-circuit
+# smuggle idiom. Restricting to these keeps precision high (it avoids flagging
+# a legitimate `cache.get(k) or default`, where `.get` is not a mutator).
+_MUTATOR_METHODS = frozenset({
+    "append", "extend", "insert", "add", "update", "discard", "remove",
+    "clear", "sort", "reverse", "setdefault", "write", "writelines",
+})
+
+
+def _value_exprs(stmt: ast.stmt):
+    """The value expression of a statement to scan for an embedded side effect,
+    or None when there is nothing embeddable to inspect. A bare discarded call
+    (`Expr` whose value is directly a `Call`) is the SEPARABLE case handled by
+    `_has_side_effect`, so it is excluded here."""
+    if isinstance(stmt, ast.Return):
+        return stmt.value
+    if isinstance(stmt, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+        return stmt.value
+    if isinstance(stmt, ast.Expr):
+        return None if isinstance(stmt.value, ast.Call) else stmt.value
+    return None
+
+
+def _embedded_drops(stmt: ast.stmt, seed_names: set) -> list:
+    """Return the short-circuit operand(s) to drop for a return-embedded smuggle.
+
+    Targets the `mutator() or value` idiom: in a BoolOp (`and`/`or`), the LAST
+    operand is the value the chain actually yields; an earlier operand that is
+    an in-place-mutator attribute call (its None result discarded) and does not
+    reference a seed name is a smuggled side effect. Returns [] otherwise.
+    """
+    root = _value_exprs(stmt)
+    if root is None:
+        return []
+    drops: list = []
+    for n in ast.walk(root):
+        if isinstance(n, ast.BoolOp):
+            for v in n.values[:-1]:  # last operand is the real value; keep it
+                if (isinstance(v, ast.Call)
+                        and isinstance(v.func, ast.Attribute)
+                        and v.func.attr in _MUTATOR_METHODS
+                        and not (_reads(v) & seed_names)):
+                    drops.append(v)
+    return drops
 
 
 def _func_global_names(fn: ast.AST) -> set:
@@ -176,6 +234,54 @@ def _revert_lines(after_src: str, after_lines: list, start: int, end: int) -> st
         return "\n".join(patched) + tail_nl
 
 
+def _surgical_revert(after_src: str, after_lines: list, stmt: ast.stmt, drop_calls: list):
+    """Build reverted source by dropping ONLY the smuggled (value-discarded)
+    short-circuit operand(s), keeping the statement's real value
+    (`return effect() or value` -> `return value`).
+
+    Only the offending statement's lines change, so the W2 health comparison
+    stays fair AND the legitimate return is preserved — a whole-statement revert
+    could remove a load-bearing return and fool the typed-closure check into a
+    FALSE forced-closure (W2) authorization. Returns None if it cannot build a
+    clean reverted source (the caller then falls back to line removal).
+    """
+    drop_src = {ast.unparse(c) for c in drop_calls}
+
+    class _Pruner(ast.NodeTransformer):
+        def visit_BoolOp(self, node):  # noqa: N802
+            self.generic_visit(node)
+            kept = [v for v in node.values if ast.unparse(v) not in drop_src]
+            if not kept:
+                return node
+            if len(kept) == 1:
+                return kept[0]
+            node.values = kept
+            return node
+
+    try:
+        fresh = ast.parse(ast.unparse(stmt)).body[0]
+        pruned = _Pruner().visit(fresh)
+        ast.fix_missing_locations(pruned)
+        rendered = ast.unparse(pruned)
+    except Exception:
+        return None
+    start = getattr(stmt, "lineno", None)
+    end = getattr(stmt, "end_lineno", start)
+    if start is None:
+        return None
+    first = after_lines[start - 1]
+    indent = first[: len(first) - len(first.lstrip())]
+    new_block = [indent + ln for ln in rendered.splitlines()]
+    tail_nl = "\n" if after_src.endswith("\n") else ""
+    patched = after_lines[: start - 1] + new_block + after_lines[end:]
+    reverted = "\n".join(patched) + tail_nl
+    try:
+        ast.parse(reverted)
+        return reverted
+    except SyntaxError:
+        return None
+
+
 def find_smuggles(after_src: str, before_src: str, seed_names: set) -> list:
     """Return smuggle records for seed-authorized functions and methods.
 
@@ -209,22 +315,31 @@ def find_smuggles(after_src: str, before_src: str, seed_names: set) -> list:
             if d in before_pool:
                 before_pool.remove(d)
                 continue
-            # reads a seed name -> treat as part of the authorized seed work
-            if _reads(stmt) & seed_names:
-                continue
-            # only surface statements with an EXTERNAL side effect. A statement
-            # is surfaced even when its value also feeds the return value
-            # (return-feeding smuggle) or is nested inside a branch / loop
-            # (control-flow-entangled creep); a non-side-effecting
-            # return-relevant or pure-local statement is legitimate and skipped.
-            if not _has_side_effect(stmt, global_names):
+            reads_seed = bool(_reads(stmt) & seed_names)
+            # (1) SEPARABLE external side effect (discarded call, attribute /
+            # subscript write, global rebind) — including return-feeding and
+            # control-flow-nested statements. Skipped if it reads a seed name
+            # (authorized seed work).
+            separable = (not reads_seed) and _has_side_effect(stmt, global_names)
+            # (2) RETURN-EMBEDDED short-circuit smuggle (`mutator() or value`):
+            # surfaced even if the statement also reads a seed name, because the
+            # seed check is applied to the discarded operand itself.
+            drops = _embedded_drops(stmt, seed_names)
+            if not (separable or drops):
                 continue
             start = getattr(stmt, "lineno", None)
             end = getattr(stmt, "end_lineno", start)
             if start is None or (start, end) in seen:
                 continue
             seen.add((start, end))
-            reverted_src = _revert_lines(after_src, after_lines, start, end)
+            if separable:
+                reverted_src = _revert_lines(after_src, after_lines, start, end)
+            else:
+                # surgical: drop only the smuggled operand, keep the real value,
+                # so reverting cannot remove a load-bearing return (false W2).
+                reverted_src = _surgical_revert(after_src, after_lines, stmt, drops)
+                if reverted_src is None:
+                    reverted_src = _revert_lines(after_src, after_lines, start, end)
             records.append({
                 "name": qualname,
                 "lineno": start,

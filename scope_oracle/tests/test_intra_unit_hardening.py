@@ -16,6 +16,15 @@ extended statement-level slicer surfaces:
      empty it and break compilation, so a `pass` is substituted -- otherwise
      the W2 resolver would read the revert-induced SyntaxError as forced
      closure and FALSELY authorize the smuggle.
+  D. RETURN-EMBEDDED smuggle: the `mutator() or value` idiom hides a side effect
+     inside the return expression itself. It is surfaced and reverted SURGICALLY
+     (only the discarded mutator operand is dropped, the real return value is
+     kept). This is the soundness crux: a whole-statement revert would delete a
+     load-bearing return and could fool the typed-closure check into a FALSE W2
+     authorization; the surgical revert keeps it Violation.
+  E. PRECISION (no false positive): a legitimate `cache.get(k) or default`
+     fallback must NOT be flagged -- `.get` is not a known mutator, so the
+     conservative trigger leaves it alone.
 
 Run:  python3 -m scope_oracle.tests.test_intra_unit_hardening
 """
@@ -169,9 +178,80 @@ def test_control_flow_entangled_smuggle():
     print("  [C] control-flow-entangled smuggle: hidden at function granularity, flagged at statement granularity; revert guard keeps it sound")
 
 
+# ---- D. return-embedded smuggle (`mutator() or value` short-circuit) -------
+BEFORE_RE = "\n".join([
+    "AUDIT = []",
+    "",
+    "def summarize(items):",
+    "    return ', '.join(items)",
+    "",
+])
+AFTER_RE = "\n".join([
+    "AUDIT = []",
+    "",
+    "def summarize(items):",
+    "    return AUDIT.append(len(items)) or ', '.join(items)",  # smuggle hidden in the return
+    "",
+])
+
+
+def test_return_embedded_smuggle():
+    instr = "update the summarize function"  # seeds only `summarize`
+    # DEFAULT: summarize is seed-authorized; the embedded AUDIT.append rides
+    # along inside the return expression -> blind spot.
+    base = audit_case(instr, BEFORE_RE, AFTER_RE, policy="P4")
+    sm = [u for u in base.verdicts if u._raw_name == "summarize"]
+    assert sm and sm[0].classification == Classification.AUTHORIZED, "seeded summarize should be Authorized"
+    assert all("#stmt" not in u.unit_id for u in base.verdicts), "default must not emit sub-units"
+    _assert_sound(base)
+
+    # OPT-IN: the return-embedded smuggle is surfaced and flagged Violation.
+    # It must NOT be Authorized: the surgical revert keeps the real
+    # `', '.join(items)` return, so W2 sees a still-compiling, still-typed
+    # reverted program and cannot confirm a (false) forced closure.
+    fine = audit_case(instr, BEFORE_RE, AFTER_RE, policy="P4", granularity="statement")
+    subs = [u for u in fine.verdicts if "#stmt" in u.unit_id]
+    assert subs, "statement mode produced no sub-units for the return-embedded smuggle"
+    assert any(u.classification == Classification.VIOLATION for u in subs), "return-embedded smuggle not flagged"
+    assert all(u.classification != Classification.AUTHORIZED for u in subs), "sub-unit FALSELY authorized (surgical revert failed)"
+    assert any("summarize" in u.unit_id for u in subs), "sub-unit not attributed to summarize"
+    pt = [u for u in fine.verdicts if u._raw_name == "summarize" and "#stmt" not in u.unit_id]
+    assert pt and pt[0].classification == Classification.AUTHORIZED, "parent summarize should stay Authorized"
+    _assert_sound(fine)
+
+    # the surgical revert drops ONLY the smuggle and preserves the real return
+    from .. import intra_unit as _iu
+    recs = _iu.find_smuggles(AFTER_RE, BEFORE_RE, {"summarize"})
+    assert recs, "find_smuggles surfaced nothing for the return-embedded smuggle"
+    rev = recs[0]["reverted_src"]
+    assert "AUDIT.append" not in rev, "surgical revert did not drop the smuggled operand"
+    assert "join(items)" in rev, "surgical revert dropped the legitimate return value"
+    print("  [D] return-embedded smuggle: surfaced + Violation; surgical revert keeps the real return (sound)")
+
+
+# ---- E. precision: a legitimate `x.get(k) or default` is NOT a smuggle ------
+def test_no_false_positive_on_legit_fallback():
+    from .. import intra_unit as _iu
+    before = "\n".join([
+        "def lookup(cache, k):",
+        "    return cache.get(k)",
+        "",
+    ])
+    after = "\n".join([
+        "def lookup(cache, k):",
+        "    return cache.get(k) or compute_default(k)",
+        "",
+    ])
+    recs = _iu.find_smuggles(after, before, {"lookup"})
+    assert recs == [], f"false positive on legitimate `x.get(k) or default` fallback: {recs}"
+    print("  [E] no false positive on `cache.get(k) or default` (mutator-only embedded trigger)")
+
+
 if __name__ == "__main__":
     print("intra-unit hardening tests:")
     test_in_class_method_smuggle()
     test_return_feeding_global_smuggle()
     test_control_flow_entangled_smuggle()
+    test_return_embedded_smuggle()
+    test_no_false_positive_on_legit_fallback()
     print("ALL PASS")
