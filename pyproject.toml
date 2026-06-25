@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "editscope"
+version = "0.1.0"
+description = "EditScope: a sound, abstaining, instruction-conditioned scope oracle for AI coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "pyflakes>=3.0",
+  "mypy>=1.8",
+]
+
+# Only the canonical package is installed. The research/adversarial harnesses
+# (scope_auditor_real/, cie_harness/) are intentionally NOT packaged: they are
+# experiment scaffolding, not part of the frozen oracle API.
+[tool.setuptools]
+packages = ["scope_oracle", "scope_oracle.tests"]
