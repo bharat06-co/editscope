@@ -32,7 +32,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .grounding import extract
+from scope_oracle.grounding import extract
 from .resolver import check, newly_broken
 from .run_real import POLICIES, outcome
 
