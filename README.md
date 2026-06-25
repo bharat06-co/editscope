@@ -49,12 +49,10 @@ scope_oracle/            # CANONICAL frozen package (the audit() API lives here)
 
 # Experiment scaffolding (NOT part of the frozen API, not pip-installed):
 cie_harness/             # adversarial probe (n=20) harness
-scope_auditor_real/      # legacy/pre-migration harness (kept for provenance)
 ```
 
 > Note: `scope_oracle.run_real` is an intentional dataset-loader stub. The real
-> CanItEdit parity entrypoint is `scope_oracle.parity_real`. Do not invoke
-> `scope_auditor_real.run_real` — that legacy module is not migrated.
+> CanItEdit parity entrypoint is `scope_oracle.parity_real`.
 
 ## Hard constraints (non-negotiable)
 - No circular eval — human slice + Cohen's κ before claiming numbers.
