@@ -36,6 +36,20 @@ def _mypy_available() -> bool:
 
 _MYPY_ON = _mypy_available()
 RESOLVER_ID = f"symbolic:pycompile+pyflakes+mypy(strict={'on' if _MYPY_ON else 'off'});callgraph=symbolic-import-name"
+# --- W2 name-channel hardening (soundness) --------------------------------
+# A revert can introduce a *cosmetic* pyflakes warning (e.g. an orphaned
+# `global X` left behind when its only assignment is removed). That is NOT a
+# forced-closure signal. The name channel may fire ONLY on a genuine
+# unresolved-reference error, never on "unused"-class lint.
+_PYFLAKES_BREAK_MARKERS = (
+    "undefined name",
+    "undefined local",
+    "referenced before assignment",
+)
+
+def _pyflakes_hard_break(stdout: str) -> bool:
+    low = (stdout or "").lower()
+    return any(m in low for m in _PYFLAKES_BREAK_MARKERS)
 
 
 def _write(src: str, stem: str) -> Path:
@@ -58,6 +72,7 @@ def check(src: str, stem: str = "case") -> dict:
         out["messages"].append(str(exc))
     pf = subprocess.run([sys.executable, "-m", "pyflakes", str(p)], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, timeout=20)
     out["pyflakes_ok"] = pf.returncode == 0
+    out["pyflakes_break"] = _pyflakes_hard_break(pf.stdout)
     if pf.stdout:
         out["messages"].append(pf.stdout)
     if _MYPY_ON:
@@ -76,7 +91,7 @@ def check(src: str, stem: str = "case") -> dict:
 def newly_broken(base: dict, variant: dict) -> bool:
     return (
         (base.get("compile_ok") and not variant.get("compile_ok"))
-        or (base.get("pyflakes_ok") and not variant.get("pyflakes_ok"))
+        or ((not base.get("pyflakes_break")) and variant.get("pyflakes_break"))
         or (base.get("mypy_ok") is True and variant.get("mypy_ok") is False)
     )
 
@@ -95,7 +110,7 @@ def resolve_w2(unit, repo_before: RepoBefore = None, patch: str = None) -> W2Evi
     base = check(audited, "w2_base")
     var = check(reverted, "w2_var")
     comp = bool(base.get("compile_ok") and not var.get("compile_ok"))
-    name = bool(base.get("pyflakes_ok") and not var.get("pyflakes_ok"))
+    name = bool((not base.get("pyflakes_break")) and var.get("pyflakes_break"))
     typ = bool(base.get("mypy_ok") is True and var.get("mypy_ok") is False)
     # Cross-file forced closure (call-graph / import-graph): does reverting THIS
     # unit leave another module referencing a name this file no longer defines?

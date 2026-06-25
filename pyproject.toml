@@ -9,10 +9,7 @@ description = "EditScope: a sound, abstaining, instruction-conditioned scope ora
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = [
-  "pyflakes>=3.0",
-  "mypy>=1.8",
-]
+dependencies = ["pyflakes==3.4.0", "mypy==2.1.0"]
 
 # Only the canonical package is installed. The research/adversarial harnesses
 # (scope_auditor_real/, cie_harness/) are intentionally NOT packaged: they are
