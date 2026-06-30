@@ -25,6 +25,30 @@ python -m scope_oracle.tests.test_intra_unit_hardening
 # CanItEdit parity slice — requires the pinned dataset available locally:
 python -m scope_oracle.parity_real --data ./canitedit --limit 102
 ```
+## Track A — scope-faithful editing benchmark (`track_a/`)
+
+Track A runs coding agents over CanItEdit and scores each edit with the frozen
+`scope_oracle.audit_case()` API. Run every tool as a module from the repo root:
+
+```bash
+# 1. fetch + pin the CanItEdit dataset locally (-> ./canitedit)
+python -m track_a.fetch_canitedit
+
+# 2. run an agent and log (instruction, before, after) per problem.
+#    --agent dry_run replays gold edits and needs no API key (good smoke test);
+#    model agents call Groq (llama-3.1-8b-instant, llama-3.3-70b-versatile, qwen3-32b).
+python -m track_a.run_agents --agent dry_run --limit 3
+
+# 3. re-audit the logged runs through the frozen oracle
+python -m track_a.rescore --runs results_track_a/runs.jsonl
+```
+
+Downstream analysis: `summarize` (pass / scope-violation rates + bootstrap CIs per
+granularity), `compare` (P1 vs P4 / cross-agent), and `compute_collateral_fpr`.
+Human-agreement utilities: `sample_units` + `render_sheet` + `make_smoke_labels`
+build a labeling sheet from sampled units, and `compute_kappa` reports oracle↔human
+Cohen's κ. `demo_card` renders a standalone demo metric card. Each tool supports
+`--help` for its flags.
 
 **Phase 0 acceptance:** a teammate can clone and run the frozen suite end-to-end from this README alone; zero unverified citation IDs in shared docs.
 
@@ -46,6 +70,18 @@ scope_oracle/            # CANONICAL frozen package (the audit() API lives here)
   parity_real.py   # CanItEdit parity runner (real entrypoint)
   run_real.py      # thin dataset-loader stub (NOT the parity entrypoint)
   tests/           # test_audit_freeze, test_grounding_precision, test_intra_unit_hardening
+track_a/                 # Track A agent benchmark harness (runs agents, re-scores via the oracle)
+  fetch_canitedit.py     # download + pin the CanItEdit dataset to ./canitedit
+  run_agents.py          # run an agent (dry_run/gold or Groq models) and log outputs
+  rescore.py             # re-audit logged runs through scope_oracle.audit_case()
+  summarize.py           # pass / scope-violation rates + bootstrap CIs per granularity
+  compare.py             # policy / cross-agent comparison
+  compute_collateral_fpr.py  # collateral false-flag rate
+  sample_units.py        # sample change units for human labeling
+  render_sheet.py        # build the human-labeling sheet
+  make_smoke_labels.py   # generate smoke-test labels
+  compute_kappa.py       # oracle <-> human Cohen's kappa
+  demo_card.py           # standalone demo metric card
 
 # Experiment scaffolding (NOT part of the frozen API, not pip-installed):
 cie_harness/             # adversarial probe (n=20) harness
