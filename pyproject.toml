@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = ["pyflakes==3.4.0", "mypy==2.1.0"]
 
 # Only the canonical package is installed. The research/adversarial harnesses
-# (scope_auditor_real/, cie_harness/) are intentionally NOT packaged: they are
+# cie_harness/ are intentionally NOT packaged: they are
 # experiment scaffolding, not part of the frozen oracle API.
 [tool.setuptools]
 packages = ["scope_oracle", "scope_oracle.tests"]
