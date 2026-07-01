@@ -3,7 +3,7 @@ from datasets import load_dataset
 from pathlib import Path
 import json
 
-REVISION = None  # TODO: pin to the HF commit hash P1 confirms (reproducibility)
+REVISION = "3c07f38b1f9385f3214fcea94d4664c79df0d36a"   # was None
 
 ds = load_dataset("nuprl/CanItEdit", revision=REVISION)
 split = "test" if "test" in ds else list(ds.keys())[0]
